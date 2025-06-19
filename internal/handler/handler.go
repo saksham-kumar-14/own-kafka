@@ -29,12 +29,13 @@ func HandleConnection(conn net.Conn) {
 		receivedData := buffer[:n]
 		log.Printf("Received %d bytes from %s: %s", n, conn.RemoteAddr(), string(receivedData))
 
-		response := []byte{0, 0, 0, 0, 0, 0, 0, 7}
-		bytesWritten, err := conn.Write(response)
+		message_size := []byte{0x00, 0x00, 0x00, 0x00}
+		correlation_id := buffer[8:12]
+		bytesWritten, err := conn.Write(append(message_size, correlation_id...))
 		if err != nil {
 			log.Printf("Error writing to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
-		log.Printf("Sent %d bytes to %s", bytesWritten, bytesWritten) // Fix: corrected second arg
+		log.Printf("Sent %d bytes to %s", bytesWritten, bytesWritten)
 	}
 }
