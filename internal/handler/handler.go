@@ -3,21 +3,139 @@ package handler
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log"
 	"net"
 )
 
-func putInt16(val int16) []byte {
-	buf := make([]byte, 2)
-	binary.BigEndian.PutUint16(buf, uint16(val))
-	return buf
+func writeInt16(w io.Writer, val int16) error {
+	return binary.Write(w, binary.BigEndian, val)
 }
 
-func putInt32(val int32) []byte {
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, uint32(val))
-	return buf
+func writeInt32(w io.Writer, val int32) error {
+	return binary.Write(w, binary.BigEndian, val)
+}
+
+func readInt16(r io.Reader) (int16, error) {
+	var val int16
+	err := binary.Read(r, binary.BigEndian, &val)
+	return val, err
+}
+
+func readInt32(r io.Reader) (int32, error) {
+	var val int32
+	err := binary.Read(r, binary.BigEndian, &val)
+	return val, err
+}
+
+func writeCompactUvarint(w io.Writer, val int) error {
+	var buf [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(buf[:], uint64(val))
+	_, err := w.Write(buf[:n])
+	return err
+}
+
+type RequestHeader struct {
+	RequestApiKey     int16
+	RequestApiVersion int16
+	CorrelationId     int32
+}
+
+type Request struct {
+	MessageSize int32
+	Header      RequestHeader
+	Body        []byte
+}
+
+type APIVersion struct {
+	ApiKey     int16
+	MinVersion int16
+	MaxVersion int16
+}
+
+type APIVersionResponse struct {
+	ErrorCode   int16
+	ApiVersions []APIVersion
+}
+
+type Response struct {
+	CorrelationId      int32
+	ApiVersionResponse APIVersionResponse
+}
+
+func makeRequest(buffer []byte) (Request, error) {
+	reader := bytes.NewReader(buffer)
+
+	req := Request{}
+	var err error
+
+	req.MessageSize, err = readInt32(reader)
+	if err != nil {
+		return req, fmt.Errorf("failed to read message size: %w", err)
+	}
+
+	req.Header.RequestApiKey, err = readInt16(reader)
+	if err != nil {
+		return req, fmt.Errorf("failed to read request API key: %w", err)
+	}
+
+	req.Header.RequestApiVersion, err = readInt16(reader)
+	if err != nil {
+		return req, fmt.Errorf("failed to read request API version: %w", err)
+	}
+
+	req.Header.CorrelationId, err = readInt32(reader)
+	if err != nil {
+		return req, fmt.Errorf("failed to read correlation ID: %w", err)
+	}
+
+	return req, nil
+}
+
+func writeResponse(conn net.Conn, resp Response) error {
+	bodyBuffer := new(bytes.Buffer)
+
+	if err := writeInt16(bodyBuffer, resp.ApiVersionResponse.ErrorCode); err != nil {
+		return fmt.Errorf("failed to write error code: %w", err)
+	}
+
+	if err := writeCompactUvarint(bodyBuffer, len(resp.ApiVersionResponse.ApiVersions)+1); err != nil {
+		return fmt.Errorf("failed to write API versions array length: %w", err)
+	}
+
+	for _, apiVersion := range resp.ApiVersionResponse.ApiVersions {
+		if err := writeInt16(bodyBuffer, apiVersion.ApiKey); err != nil {
+			return fmt.Errorf("failed to write API key %d: %w", apiVersion.ApiKey, err)
+		}
+		if err := writeInt16(bodyBuffer, apiVersion.MinVersion); err != nil {
+			return fmt.Errorf("failed to write min version for API %d: %w", apiVersion.ApiKey, err)
+		}
+		if err := writeInt16(bodyBuffer, apiVersion.MaxVersion); err != nil {
+			return fmt.Errorf("failed to write max version for API %d: %w", apiVersion.ApiKey, err)
+		}
+		if err := writeCompactUvarint(bodyBuffer, 0); err != nil {
+			return fmt.Errorf("failed to write tagged fields for API %d: %w", apiVersion.ApiKey, err)
+		}
+	}
+
+	if err := writeCompactUvarint(bodyBuffer, 0); err != nil {
+		return fmt.Errorf("failed to write top-level tagged fields: %w", err)
+	}
+
+	messageSize := int32(4 + bodyBuffer.Len())
+
+	if err := writeInt32(conn, messageSize); err != nil {
+		return fmt.Errorf("failed to write message size: %w", err)
+	}
+	if err := writeInt32(conn, resp.CorrelationId); err != nil {
+		return fmt.Errorf("failed to write correlation ID: %w", err)
+	}
+	if _, err := conn.Write(bodyBuffer.Bytes()); err != nil {
+		return fmt.Errorf("failed to write response body: %w", err)
+	}
+
+	return nil
 }
 
 func HandleConnection(conn net.Conn) {
@@ -41,49 +159,37 @@ func HandleConnection(conn net.Conn) {
 		}
 
 		receivedData := buffer[:n]
-		log.Printf("Received %d bytes from %s: %x", n, conn.RemoteAddr(), receivedData)
+		log.Printf("Received %d bytes from %s. Data: %x", n, conn.RemoteAddr(), receivedData)
 
-		correlationId := receivedData[8:12]
-		requestApiKey := binary.BigEndian.Uint16(receivedData[4:6])
-		requestApiVersion := binary.BigEndian.Uint16(receivedData[6:8])
-
-		log.Printf("Request API Key: %d, Version: %d, Correlation ID: %x",
-			requestApiKey, requestApiVersion, correlationId)
-
-		var errorCode int16 = 0
-
-		responseBodyBuf := new(bytes.Buffer)
-
-		responseBodyBuf.Write(putInt16(errorCode))
-
-		responseBodyBuf.WriteByte(0x02)
-
-		responseBodyBuf.Write(putInt16(18))
-		responseBodyBuf.Write(putInt16(0))
-		responseBodyBuf.Write(putInt16(4))
-		responseBodyBuf.WriteByte(0x00)
-
-		responseBodyBuf.Write(putInt16(75))
-		responseBodyBuf.Write(putInt16(0))
-		responseBodyBuf.Write(putInt16(0))
-		responseBodyBuf.WriteByte(0x00)
-
-		responseBodyBuf.WriteByte(0x00)
-
-		finalResponse := new(bytes.Buffer)
-
-		messageLength := int32(len(correlationId) + responseBodyBuf.Len())
-		finalResponse.Write(putInt32(messageLength))
-
-		finalResponse.Write(correlationId)
-
-		finalResponse.Write(responseBodyBuf.Bytes())
-
-		bytesWritten, err := conn.Write(finalResponse.Bytes())
+		request, err := makeRequest(receivedData)
 		if err != nil {
-			log.Printf("Error writing to %s: %v", conn.RemoteAddr(), err)
+			log.Printf("Error parsing request from %s: %v", conn.RemoteAddr(), err)
 			return
 		}
-		log.Printf("Sent %d bytes to %s. Response: %x", bytesWritten, conn.RemoteAddr(), finalResponse.Bytes())
+
+		log.Printf("Parsed Request: API Key=%d, Version=%d, Correlation ID=%d, Size=%d",
+			request.Header.RequestApiKey,
+			request.Header.RequestApiVersion,
+			request.Header.CorrelationId,
+			request.MessageSize,
+		)
+
+		response := Response{
+			CorrelationId: request.Header.CorrelationId,
+			ApiVersionResponse: APIVersionResponse{
+				ErrorCode: 0,
+				ApiVersions: []APIVersion{
+					{ApiKey: 18, MinVersion: 0, MaxVersion: 4},
+					{ApiKey: 75, MinVersion: 0, MaxVersion: 0},
+				},
+			},
+		}
+
+		if err := writeResponse(conn, response); err != nil {
+			log.Printf("Error writing response to %s: %v", conn.RemoteAddr(), err)
+			return
+		}
+		log.Printf("Successfully sent APIVersions response to %s (Correlation ID: %d)",
+			conn.RemoteAddr(), response.CorrelationId)
 	}
 }
