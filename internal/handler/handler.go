@@ -63,13 +63,12 @@ func HandleConnection(conn net.Conn) {
 		responseBodyBuf.Write(putInt16(4))
 
 		responseBodyBuf.WriteByte(0x00)
+		responseBodyBuf.WriteByte(0x00)
 
 		finalResponse := new(bytes.Buffer)
 
 		messageLength := int32(len(correlationId) + responseBodyBuf.Len())
 		finalResponse.Write(putInt32(messageLength))
-
-		finalResponse.Write(correlationId)
 
 		finalResponse.Write(responseBodyBuf.Bytes())
 
