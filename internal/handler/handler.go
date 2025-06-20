@@ -177,14 +177,34 @@ func HandleConnection(conn net.Conn) {
 			request.MessageSize,
 		)
 
+		supportedAPIs := []APIVersion{
+			{ApiKey: 18, MinVersion: 0, MaxVersion: 4},
+			{ApiKey: 75, MinVersion: 0, MaxVersion: 0},
+		}
+
+		var responseErrorCode int16 = 0
+
+		foundAPI := false
+		for _, supportedAPI := range supportedAPIs {
+			if request.Header.RequestApiKey == supportedAPI.ApiKey {
+				foundAPI = true
+				if request.Header.RequestApiVersion < supportedAPI.MinVersion ||
+					request.Header.RequestApiVersion > supportedAPI.MaxVersion {
+					responseErrorCode = 35
+				}
+				break
+			}
+		}
+
+		if !foundAPI {
+			responseErrorCode = 35
+		}
+
 		response := Response{
 			CorrelationId: request.Header.CorrelationId,
 			ApiVersionResponse: APIVersionResponse{
-				ErrorCode: 0,
-				ApiVersions: []APIVersion{
-					{ApiKey: 18, MinVersion: 0, MaxVersion: 4},
-					{ApiKey: 75, MinVersion: 0, MaxVersion: 0},
-				},
+				ErrorCode:   responseErrorCode,
+				ApiVersions: supportedAPIs,
 			},
 		}
 
@@ -192,7 +212,7 @@ func HandleConnection(conn net.Conn) {
 			log.Printf("Error writing response to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
-		log.Printf("Successfully sent APIVersions response to %s (Correlation ID: %d)",
-			conn.RemoteAddr(), response.CorrelationId)
+		log.Printf("Successfully sent APIVersions response to %s (Correlation ID: %d, ErrorCode: %d)",
+			conn.RemoteAddr(), response.CorrelationId, response.ApiVersionResponse.ErrorCode)
 	}
 }
