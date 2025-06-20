@@ -41,7 +41,7 @@ func HandleConnection(conn net.Conn) {
 		}
 
 		receivedData := buffer[:n]
-		log.Printf("Received %d bytes from %s: %s", n, conn.RemoteAddr(), string(receivedData))
+		log.Printf("Received %d bytes from %s: %x", n, conn.RemoteAddr(), receivedData)
 
 		correlationId := buffer[8:12]
 		apiKey := binary.BigEndian.Uint16(buffer[4:6])
@@ -52,28 +52,32 @@ func HandleConnection(conn net.Conn) {
 			errorCode = 35
 		}
 
-		response := new(bytes.Buffer)
-		response.Write(putInt16(int16(errorCode)))
-		response.WriteByte(0x00)
-		response.WriteByte(0x01)
-		response.Write(putInt16(18))
-		response.Write(putInt16(0))
-		response.Write(putInt16(4))
-		response.WriteByte(0x00)
-		response.WriteByte(0x01)
-		response.WriteByte(0x00)
+		responseBodyBuf := new(bytes.Buffer)
+
+		responseBodyBuf.Write(putInt16(errorCode))
+
+		responseBodyBuf.WriteByte(0x01)
+
+		responseBodyBuf.Write(putInt16(18))
+		responseBodyBuf.Write(putInt16(0))
+		responseBodyBuf.Write(putInt16(4))
+
+		responseBodyBuf.WriteByte(0x00)
 
 		finalResponse := new(bytes.Buffer)
-		messageLength := int32(len(correlationId) + response.Len())
+
+		messageLength := int32(len(correlationId) + responseBodyBuf.Len())
 		finalResponse.Write(putInt32(messageLength))
 
 		finalResponse.Write(correlationId)
-		finalResponse.Write(response.Bytes())
 
-		_, err = conn.Write(finalResponse.Bytes())
+		finalResponse.Write(responseBodyBuf.Bytes())
+
+		bytesWritten, err := conn.Write(finalResponse.Bytes())
 		if err != nil {
 			log.Printf("Error writing to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
+		log.Printf("Sent %d bytes to %s. Response: %x", bytesWritten, conn.RemoteAddr(), finalResponse.Bytes())
 	}
 }
