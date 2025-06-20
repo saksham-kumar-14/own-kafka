@@ -119,6 +119,9 @@ func writeResponse(conn net.Conn, resp Response) error {
 		}
 	}
 
+	if err := writeInt32(bodyBuffer, 0); err != nil {
+		return fmt.Errorf("failed to write throttle_time_ms: %w", err)
+	}
 	if err := writeCompactUvarint(bodyBuffer, 0); err != nil {
 		return fmt.Errorf("failed to write top-level tagged fields: %w", err)
 	}
