@@ -34,10 +34,21 @@ func HandleConnection(conn net.Conn) {
 		apiVersion := binary.BigEndian.Uint16(buffer[6:8])
 
 		var errorCode int16 = 0
-		if apiVersion > 4 || apiKey != 18 {
+		if apiKey == 18 && apiVersion >= 0 && apiVersion <= 4 {
+			errorCode = 0
+		} else if apiKey == 75 && apiVersion == 0 {
+			errorCode = 0
+		} else {
 			errorCode = 35
 		}
 
+		// response
+		// msgType [0 - 3]
+		// correlationId[4 - 7] from buffer[8:12]
+		// 0, errorcode
+		// API KEY
+		// 0, startApiVersion
+		// 0, endApiVersion
 		response := [23]byte{0, 0, 0, 19, buffer[8], buffer[9], buffer[10], buffer[11], 0, byte(errorCode), 2, 0, 18, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0}
 
 		_, err = conn.Write(response[:])
