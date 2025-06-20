@@ -1,11 +1,24 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"log"
 	"net"
 )
+
+func putInt16(val int16) []byte {
+	buf := make([]byte, 2)
+	binary.BigEndian.PutUint16(buf, uint16(val))
+	return buf
+}
+
+func putInt32(val int32) []byte {
+	buf := make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, uint32(val))
+	return buf
+}
 
 func HandleConnection(conn net.Conn) {
 	defer func() {
@@ -30,31 +43,47 @@ func HandleConnection(conn net.Conn) {
 		receivedData := buffer[:n]
 		log.Printf("Received %d bytes from %s: %x", n, conn.RemoteAddr(), receivedData)
 
-		apiKey := binary.BigEndian.Uint16(buffer[4:6])
-		apiVersion := binary.BigEndian.Uint16(buffer[6:8])
+		correlationId := receivedData[8:12]
+		requestApiKey := binary.BigEndian.Uint16(receivedData[4:6])
+		requestApiVersion := binary.BigEndian.Uint16(receivedData[6:8])
+
+		log.Printf("Request API Key: %d, Version: %d, Correlation ID: %x",
+			requestApiKey, requestApiVersion, correlationId)
 
 		var errorCode int16 = 0
-		if apiKey == 18 && apiVersion <= 4 {
-			errorCode = 0
-		} else if apiKey == 75 && apiVersion == 0 {
-			errorCode = 0
-		} else {
-			errorCode = 35
-		}
 
-		// response
-		// msgType [0 - 3]
-		// correlationId[4 - 7] from buffer[8:12]
-		// 0, errorcode
-		// API KEY
-		// 0, startApiVersion
-		// 0, endApiVersion
-		response := [23]byte{0, 0, 0, 19, buffer[8], buffer[9], buffer[10], buffer[11], 0, byte(errorCode), 2, 0, byte(apiKey), 0, 0, 0, 4, 0, 0, 0, 0, 0, 0}
+		responseBodyBuf := new(bytes.Buffer)
 
-		_, err = conn.Write(response[:])
+		responseBodyBuf.Write(putInt16(errorCode))
+
+		responseBodyBuf.WriteByte(0x02)
+
+		responseBodyBuf.Write(putInt16(18))
+		responseBodyBuf.Write(putInt16(0))
+		responseBodyBuf.Write(putInt16(4))
+		responseBodyBuf.WriteByte(0x00)
+
+		responseBodyBuf.Write(putInt16(75))
+		responseBodyBuf.Write(putInt16(0))
+		responseBodyBuf.Write(putInt16(0))
+		responseBodyBuf.WriteByte(0x00)
+
+		responseBodyBuf.WriteByte(0x00)
+
+		finalResponse := new(bytes.Buffer)
+
+		messageLength := int32(len(correlationId) + responseBodyBuf.Len())
+		finalResponse.Write(putInt32(messageLength))
+
+		finalResponse.Write(correlationId)
+
+		finalResponse.Write(responseBodyBuf.Bytes())
+
+		bytesWritten, err := conn.Write(finalResponse.Bytes())
 		if err != nil {
 			log.Printf("Error writing to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
+		log.Printf("Sent %d bytes to %s. Response: %x", bytesWritten, conn.RemoteAddr(), finalResponse.Bytes())
 	}
 }
