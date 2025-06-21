@@ -213,18 +213,19 @@ func HandleConnection(conn net.Conn) {
 			}
 
 			respBuf := new(bytes.Buffer)
-			_ = writeInt32(respBuf, 0)
-			_ = writeInt32(respBuf, 1)
-			_ = writeInt16(respBuf, int16(len(topicName)))
-			_, _ = respBuf.Write([]byte(topicName))
-			_, _ = respBuf.Write(make([]byte, 16))
-			_ = writeInt16(respBuf, 3)
-			_ = writeInt32(respBuf, 0)
+
+			writeInt32(respBuf, 0)
+			writeInt32(respBuf, 1)
+			writeInt16(respBuf, int16(len(topicName)))
+			respBuf.Write([]byte(topicName))
+			respBuf.Write(make([]byte, 16))
+			writeInt16(respBuf, 3)
+			writeInt32(respBuf, 0)
 
 			fullResp := new(bytes.Buffer)
-			_ = writeInt32(fullResp, int32(4+respBuf.Len()))
-			_ = writeInt32(fullResp, request.Header.CorrelationId)
-			_, _ = fullResp.Write(respBuf.Bytes())
+			writeInt32(fullResp, int32(4+respBuf.Len()))
+			writeInt32(fullResp, request.Header.CorrelationId)
+			fullResp.Write(respBuf.Bytes())
 
 			_, err = conn.Write(fullResp.Bytes())
 			if err != nil {
