@@ -66,7 +66,6 @@ type Response struct {
 
 func makeRequest(buffer []byte) (Request, error) {
 	reader := bytes.NewReader(buffer)
-
 	req := Request{}
 	var err error
 
@@ -89,6 +88,13 @@ func makeRequest(buffer []byte) (Request, error) {
 	if err != nil {
 		return req, fmt.Errorf("failed to read correlation ID: %w", err)
 	}
+
+	body := make([]byte, req.MessageSize-8)
+	_, err = io.ReadFull(reader, body)
+	if err != nil {
+		return req, fmt.Errorf("failed to read request body: %w", err)
+	}
+	req.Body = body
 
 	return req, nil
 }
@@ -141,6 +147,28 @@ func writeResponse(conn net.Conn, resp Response) error {
 	return nil
 }
 
+func extractTopicNameFromRequest(body []byte) (string, error) {
+	r := bytes.NewReader(body)
+
+	var topicCount int32
+	if err := binary.Read(r, binary.BigEndian, &topicCount); err != nil {
+		return "", fmt.Errorf("failed to read topic count: %w", err)
+	}
+	if topicCount != 1 {
+		return "", fmt.Errorf("expected 1 topic, got %d", topicCount)
+	}
+
+	var nameLen int16
+	if err := binary.Read(r, binary.BigEndian, &nameLen); err != nil {
+		return "", fmt.Errorf("failed to read topic name length: %w", err)
+	}
+	nameBytes := make([]byte, nameLen)
+	if _, err := io.ReadFull(r, nameBytes); err != nil {
+		return "", fmt.Errorf("failed to read topic name bytes: %w", err)
+	}
+	return string(nameBytes), nil
+}
+
 func HandleConnection(conn net.Conn) {
 	defer func() {
 		log.Printf("Closing connection from %s", conn.RemoteAddr())
@@ -150,7 +178,7 @@ func HandleConnection(conn net.Conn) {
 	log.Printf("Accepted connection from %s", conn.RemoteAddr())
 
 	for {
-		buffer := make([]byte, 1024)
+		buffer := make([]byte, 4096)
 		n, err := conn.Read(buffer)
 		if err != nil {
 			if err == io.EOF {
@@ -177,25 +205,50 @@ func HandleConnection(conn net.Conn) {
 			request.MessageSize,
 		)
 
+		if request.Header.RequestApiKey == 75 && request.Header.RequestApiVersion == 0 {
+			topicName, err := extractTopicNameFromRequest(request.Body)
+			if err != nil {
+				log.Printf("Failed to extract topic name: %v", err)
+				return
+			}
+
+			respBuf := new(bytes.Buffer)
+			_ = writeInt32(respBuf, 0)
+			_ = writeInt32(respBuf, 1)
+			_ = writeInt16(respBuf, int16(len(topicName)))
+			_, _ = respBuf.Write([]byte(topicName))
+			_, _ = respBuf.Write(make([]byte, 16))
+			_ = writeInt16(respBuf, 3)
+			_ = writeInt32(respBuf, 0)
+
+			fullResp := new(bytes.Buffer)
+			_ = writeInt32(fullResp, int32(4+respBuf.Len()))
+			_ = writeInt32(fullResp, request.Header.CorrelationId)
+			_, _ = fullResp.Write(respBuf.Bytes())
+
+			_, err = conn.Write(fullResp.Bytes())
+			if err != nil {
+				log.Printf("Error writing DescribeTopicPartitions response: %v", err)
+			}
+			continue
+		}
+
 		supportedAPIs := []APIVersion{
 			{ApiKey: 18, MinVersion: 0, MaxVersion: 4},
 			{ApiKey: 75, MinVersion: 0, MaxVersion: 0},
 		}
 
 		var responseErrorCode int16 = 0
-
 		foundAPI := false
 		for _, supportedAPI := range supportedAPIs {
 			if request.Header.RequestApiKey == supportedAPI.ApiKey {
 				foundAPI = true
-				if request.Header.RequestApiVersion < supportedAPI.MinVersion ||
-					request.Header.RequestApiVersion > supportedAPI.MaxVersion {
+				if request.Header.RequestApiVersion < supportedAPI.MinVersion || request.Header.RequestApiVersion > supportedAPI.MaxVersion {
 					responseErrorCode = 35
 				}
 				break
 			}
 		}
-
 		if !foundAPI {
 			responseErrorCode = 35
 		}
@@ -212,6 +265,7 @@ func HandleConnection(conn net.Conn) {
 			log.Printf("Error writing response to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
+
 		log.Printf("Successfully sent APIVersions response to %s (Correlation ID: %d, ErrorCode: %d)",
 			conn.RemoteAddr(), response.CorrelationId, response.ApiVersionResponse.ErrorCode)
 	}
