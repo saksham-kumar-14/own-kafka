@@ -1,2 +1,3 @@
-Kafka implementation from scratch in Go.
-See the [protocols used](https://kafka.apache.org/protocol.html)
+# Kafka implementation from scratch in Go.
+- See the [protocols used](https://kafka.apache.org/protocol.html)
+- Work in progress...
